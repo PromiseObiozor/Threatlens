@@ -2,23 +2,53 @@ import re
 from urllib.parse import urlparse
 
 
-URL_PATTERN = re.compile(r"https?://[^\s]+|www\.[^\s]+", re.IGNORECASE)
+URL_PATTERN = re.compile(r"https?://[^\s<>\"]+|www\.[^\s<>\"]+", re.IGNORECASE)
+
+TRAILING_PUNCTUATION = ".,;:!?)]}'\""
+
 SUSPICIOUS_TLDS = {
-    ".zip", ".xyz", ".top", ".click", ".link", ".work", ".country", ".stream"
+    ".zip",
+    ".xyz",
+    ".top",
+    ".click",
+    ".link",
+    ".work",
+    ".country",
+    ".stream",
+    ".gq",
+    ".tk",
+    ".ml",
+    ".cf",
 }
+
 URL_SHORTENERS = {
-    "bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly", "is.gd", "buff.ly"
+    "bit.ly",
+    "tinyurl.com",
+    "t.co",
+    "goo.gl",
+    "ow.ly",
+    "is.gd",
+    "buff.ly",
 }
 
 
 def extract_urls(text: str) -> list[str]:
     """
-    Finds URLs inside email text.
+    Finds URLs inside email text and removes punctuation captured at the end.
+    Example:
+    http://example.com/login. becomes http://example.com/login
     """
+
     if not text:
         return []
 
-    return URL_PATTERN.findall(text)
+    raw_urls = URL_PATTERN.findall(text)
+    cleaned_urls = []
+
+    for url in raw_urls:
+        cleaned_urls.append(url.rstrip(TRAILING_PUNCTUATION))
+
+    return cleaned_urls
 
 
 def has_ip_address(url: str) -> bool:
@@ -26,6 +56,7 @@ def has_ip_address(url: str) -> bool:
     Checks if a URL contains an IP address instead of a normal domain.
     Example: http://192.168.1.1/login
     """
+
     ip_pattern = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
     return bool(ip_pattern.search(url))
 
@@ -34,6 +65,7 @@ def get_domain(url: str) -> str:
     """
     Extracts the domain from a URL.
     """
+
     if url.startswith("www."):
         url = "http://" + url
 
@@ -41,93 +73,123 @@ def get_domain(url: str) -> str:
     return parsed.netloc.lower()
 
 
+def _build_finding(index: int, severity: str, detail: str, evidence: str) -> dict:
+    return {
+        "id": f"url_{index}",
+        "severity": severity,
+        "title": "Suspicious URL",
+        "detail": detail,
+        "evidence": evidence,
+    }
+
+
+def analyse_urls(text: str) -> dict:
+    """
+    Scores suspicious URL behaviour and returns the dictionary format used by /scan.
+
+    Returns:
+    {
+        "score": int,
+        "findings": list,
+        "urls": list
+    }
+    """
+
+    urls = extract_urls(text)
+    findings = []
+    url_details = []
+    score = 0
+
+    if not urls:
+        return {
+            "score": 0,
+            "findings": [],
+            "urls": [],
+        }
+
+    for index, url in enumerate(urls):
+        domain = get_domain(url)
+        reasons = []
+        url_score = 0
+
+        if has_ip_address(url):
+            url_score += 35
+            reasons.append("Raw IP address instead of domain")
+
+        if len(url) > 100:
+            url_score += 20
+            reasons.append("URL is unusually long")
+
+        if "@" in url:
+            url_score += 25
+            reasons.append("URL contains '@' symbol")
+
+        if domain.count("-") >= 3:
+            url_score += 15
+            reasons.append("Excessive hyphens in domain")
+
+        if domain.count(".") >= 4:
+            url_score += 15
+            reasons.append("URL contains many subdomains")
+
+        if any(domain.endswith(tld) for tld in SUSPICIOUS_TLDS):
+            url_score += 20
+            reasons.append("Suspicious top-level domain")
+
+        if domain in URL_SHORTENERS:
+            url_score += 20
+            reasons.append("Known URL shortener")
+
+        score += url_score
+
+        suspicious = bool(reasons)
+
+        url_details.append(
+            {
+                "url": url,
+                "suspicious": suspicious,
+                "reasons": reasons,
+            }
+        )
+
+        if suspicious:
+            severity = "high" if url_score >= 25 else "medium"
+
+            findings.append(
+                _build_finding(
+                    index=len(findings),
+                    severity=severity,
+                    detail="; ".join(reasons),
+                    evidence=url,
+                )
+            )
+
+    return {
+        "score": min(score, 100),
+        "findings": findings,
+        "urls": url_details,
+    }
+
+
 def score_urls(text: str) -> tuple[int, list[str], list[str]]:
     """
-    Scores suspicious URL behaviour from 0 to 100.
+    Compatibility function for older code.
     Returns:
     - url score
     - reasons
     - extracted URLs
     """
-    urls = extract_urls(text)
+
+    result = analyse_urls(text)
+
     reasons = []
-    score = 0
+    for url_item in result["urls"]:
+        reasons.extend(url_item.get("reasons", []))
 
-    if not urls:
-        return 0, reasons, urls
-
-    for url in urls:
-        domain = get_domain(url)
-
-        if has_ip_address(url):
-            score += 35
-            reasons.append(f"URL contains an IP address: {url}")
-
-        if len(url) > 100:
-            score += 20
-            reasons.append(f"URL is unusually long: {url}")
-
-        if "@" in url:
-            score += 25
-            reasons.append(f"URL contains '@' symbol: {url}")
-
-        if domain.count("-") >= 3:
-            score += 15
-            reasons.append(f"Domain contains excessive hyphens: {domain}")
-
-        if domain.count(".") >= 4:
-            score += 15
-            reasons.append(f"URL contains many subdomains: {domain}")
-
-        if any(domain.endswith(tld) for tld in SUSPICIOUS_TLDS):
-            score += 20
-            reasons.append(f"URL uses suspicious top-level domain: {domain}")
-
-        if domain in URL_SHORTENERS:
-            score += 20
-            reasons.append(f"URL uses a known shortener: {domain}")
-
-    return min(score, 100), reasons, urls
+    return result["score"], reasons, extract_urls(text)
 
 
-"""
-import re
-from urllib.parse import urlparse 
-
-URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
-SUSPICIOUS_TLDS = {".xyz", ".top", ".tk", ".click", ".zip"}
-IP_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
-
-def analyse_urls(body: str) -> dict:
-    urls = URL_RE.findall(body)
-    findings, url_details = [], []
-    score = 0
-
-    for url in urls:
-        reasons = []
-        host = urlparse(url).hostname or ""
-
-        if IP_RE.match(host):
-            reasons.append("Raw IP address instead of domain")
-            score += 25
-
-        if any(host.endswith(tld) for tld in SUSPICIOUS_TLDS):
-            reasons.append(f"Suspicious TLD ({host.rsplit('.', 1)[-1]})")
-            score += 15
-
-        if host.count("-") >= 2:
-            reasons.append("Excessive hyphens in domain")
-            score += 5
-
-        url_details.append({"url": url, "suspicious": bool(reasons), "reasons": reasons})
-        if reasons:
-            findings.append({
-                "id": f"url_{len(findings)}",
-                "severity": "high" if score >= 25 else "medium",
-                "title": "Suspicious URL",
-                "detail": "; ".join(reasons),
-                "evidence": url,
-            })
-    
-    return{"score": min(score, 100), "findings": findings, "urls": url_details}
-"""
+# Compatibility aliases.
+analyze_urls = analyse_urls
+run_url_rules = analyse_urls
+check_url_rules = analyse_urls

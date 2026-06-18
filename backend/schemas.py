@@ -13,6 +13,7 @@ class EmailScanResponse(BaseModel):
     risk_score: int
     label: str
     ml_score: int
+    nlp_score: int
     url_score: int
     metadata_score: int
     reasons: list[str]
@@ -38,4 +39,3 @@ class Finding(BaseModel):
     detail: str
     evidence: Optional[str] = None 
 """
-

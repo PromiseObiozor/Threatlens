@@ -23,17 +23,22 @@ FREE_EMAIL_DOMAINS = {
 }
 
 ROLE_WORDS = {
-    "security",
-    "verify",
     "account",
-    "support",
     "admin",
     "billing",
-    "update",
-    "login",
+    "ceo",
+    "director",
+    "executive",
+    "founder",
     "finance",
+    "login",
+    "owner",
     "payroll",
     "accounts",
+    "security",
+    "support",
+    "update",
+    "verify",
 }
 
 BRAND_LOOKALIKE_PATTERNS = {

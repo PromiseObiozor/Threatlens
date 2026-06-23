@@ -31,6 +31,26 @@ URL_SHORTENERS = {
     "buff.ly",
 }
 
+SUSPICIOUS_DOMAIN_WORDS = {
+    "account",
+    "claim",
+    "login",
+    "prize",
+    "reward",
+    "secure",
+    "verify",
+}
+
+SUSPICIOUS_PATH_WORDS = {
+    "account",
+    "claim",
+    "login",
+    "reset",
+    "secure",
+    "update",
+    "verify",
+}
+
 
 def extract_urls(text: str) -> list[str]:
     """
@@ -51,6 +71,16 @@ def extract_urls(text: str) -> list[str]:
     return cleaned_urls
 
 
+def parse_url(url: str):
+    """
+    Parses URLs consistently, including links that start with www.
+    """
+    if url.startswith("www."):
+        url = "http://" + url
+
+    return urlparse(url)
+
+
 def has_ip_address(url: str) -> bool:
     """
     Checks if a URL contains an IP address instead of a normal domain.
@@ -65,11 +95,7 @@ def get_domain(url: str) -> str:
     """
     Extracts the domain from a URL.
     """
-
-    if url.startswith("www."):
-        url = "http://" + url
-
-    parsed = urlparse(url)
+    parsed = parse_url(url)
     return parsed.netloc.lower()
 
 
@@ -108,9 +134,15 @@ def analyse_urls(text: str) -> dict:
         }
 
     for index, url in enumerate(urls):
+        parsed = parse_url(url)
         domain = get_domain(url)
+        path_and_query = f"{parsed.path} {parsed.query}".lower()
         reasons = []
         url_score = 0
+
+        if parsed.scheme == "http" and url.lower().startswith("http://"):
+            url_score += 15
+            reasons.append("URL uses insecure HTTP instead of HTTPS")
 
         if has_ip_address(url):
             url_score += 35
@@ -124,13 +156,21 @@ def analyse_urls(text: str) -> dict:
             url_score += 25
             reasons.append("URL contains '@' symbol")
 
-        if domain.count("-") >= 3:
-            url_score += 15
+        if domain.count("-") >= 2:
+            url_score += 20
             reasons.append("Excessive hyphens in domain")
 
         if domain.count(".") >= 4:
             url_score += 15
             reasons.append("URL contains many subdomains")
+
+        if any(word in domain for word in SUSPICIOUS_DOMAIN_WORDS):
+            url_score += 15
+            reasons.append("Domain contains suspicious phishing keyword")
+
+        if any(word in path_and_query for word in SUSPICIOUS_PATH_WORDS):
+            url_score += 15
+            reasons.append("URL path contains suspicious action keyword")
 
         if any(domain.endswith(tld) for tld in SUSPICIOUS_TLDS):
             url_score += 20

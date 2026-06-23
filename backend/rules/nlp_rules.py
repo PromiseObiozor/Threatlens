@@ -5,10 +5,10 @@ from typing import List, Dict
 PATTERNS = [
    (
         "urgency",
-        r"\b(urgent|urgently|immediately|asap|within \d+ hours?|within 24 hours|today|before close of business|final warning|last chance)\b", 15,  "Urgency / Pressure",),
+        r"\b(urgent|urgently|immediately|asap|right away|as soon as possible|within \d+ hours?|within 24 hours|today|before close of business|before end of day|end of day|eod|final warning|last chance|time sensitive)\b", 15,  "Urgency / Pressure",),
     (
         "authority",
-        r"\b(ceo|chief executive|director|hr|it support|admin|finance department|accounts department|payroll|manager|security team)\b", 10, "Authority impersonation",),
+        r"\b(ceo|chief executive|director|founder|owner|executive|boss|hr|it support|admin|finance department|accounts department|payroll|manager|security team)\b", 10, "Authority impersonation",),
     (
         "fear",
         r"\b(suspended|terminated|legal action|locked|compromised|blocked|unauthorised access|unauthorized access|unusual activity|security alert)\b", 15, "Fear / threat",),
@@ -17,13 +17,13 @@ PATTERNS = [
         r"\b(verify your information|verify your account|confirm your details|update your details|login|log in|password|credentials?|sign in|authentication|security code)\b", 20, "Credential request",),
     (
         "reward",
-        r"\b(won|prize|claim your|congratulations|gift card|bonus|reward|selected)\b", 10, "Reward bait",),
+        r"\b(won|winner|prize|cash prize|claim your|claim now|congratulations|gift card|free gift|bonus|reward|selected|you have been selected)\b", 10, "Reward bait",),
     (
         "secrecy",
-        r"\b(don't tell|do not tell|confidential|strictly confidential|between us|do not share|keep this private|do not discuss)\b", 12, "Secrecy / request",),
+        r"\b(don't tell|do not tell|confidential|confidentially|strictly confidential|keep this confidential|between us|do not share|keep this private|do not discuss|do not call|don't call|no need to call)\b", 12, "Secrecy / request",),
     (
         "financial_request",
-        r"\b(invoice|payment|payment portal|arrange payment|process payment|outstanding balance|remittance|wire transfer|transfer funds|bank transfer|sort code|iban|account number|payee|billing)\b", 15, "Financial / payment request",),
+        r"\b(invoice|payment|payment request|payment portal|arrange payment|process payment|approve payment|make a payment|vendor payment|supplier payment|pay the vendor|settle the invoice|outstanding balance|remittance|wire transfer|transfer funds|send funds|bank transfer|sort code|iban|account number|payee|beneficiary|billing)\b", 15, "Financial / payment request",),
     (
         "bank_change",
         r"\b(bank details have changed|new bank details|updated bank details|changed payment details|new payment account|use the new payment|new account number|account details have changed|bank details changed)\b",  20, "Changed bank details",),
@@ -40,7 +40,7 @@ def analyse_nlp(text: str) -> Dict:
     for cat, pattern, weight, label in PATTERNS:
         matches = re.findall(pattern, lower)
         if matches: 
-            unique_matches = set(matches)
+            unique_matches = sorted(set(matches))
             score += weight
 
             findings.append({
@@ -48,7 +48,7 @@ def analyse_nlp(text: str) -> Dict:
                 "severity": "high" if weight >= 15 else "medium",
                 "title": label,
                 "detail": f"Found {len(matches)} match(es) for {cat} cues.",
-                "evidence": ", ".join(set(matches))[:200],
+                "evidence": ", ".join(unique_matches)[:200],
             })
     return {
         "score": min(score, 100),

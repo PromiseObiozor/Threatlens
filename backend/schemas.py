@@ -2,6 +2,20 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 
 
+class UserCredentials(BaseModel):
+    username: str = Field(..., min_length=3, description="Username")
+    password: str = Field(..., min_length=8, description="Password")
+
+
+class UserResponse(BaseModel):
+    username: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
 class EmailScanRequest(BaseModel):
     subject: str = Field(..., description="Email subject line")
     body: str = Field(..., description="Main email body/content")
@@ -13,6 +27,7 @@ class EmailScanResponse(BaseModel):
     risk_score: int
     label: str
     ml_score: int
+    nlp_score: int
     url_score: int
     metadata_score: int
     reasons: list[str]
@@ -38,4 +53,3 @@ class Finding(BaseModel):
     detail: str
     evidence: Optional[str] = None 
 """
-

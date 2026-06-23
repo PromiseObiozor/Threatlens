@@ -1,3 +1,5 @@
+from uuid import uuid4
+
 from fastapi.testclient import TestClient
 
 from main import app
@@ -57,12 +59,73 @@ REWARD_SCAM_EMAIL = {
 }
 
 
+def unique_credentials() -> dict:
+    return {
+        "username": f"tester_{uuid4().hex}",
+        "password": "StrongPass123!",
+    }
+
+
+def register_and_login(client: TestClient) -> dict[str, str]:
+    credentials = unique_credentials()
+
+    register_response = client.post("/register", json=credentials)
+    assert register_response.status_code == 200
+
+    login_response = client.post("/login", json=credentials)
+    assert login_response.status_code == 200
+
+    token = login_response.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
 def scan(payload: dict) -> dict:
     with TestClient(app) as client:
-        response = client.post("/scan", json=payload)
+        headers = register_and_login(client)
+        response = client.post("/scan", json=payload, headers=headers)
 
     assert response.status_code == 200
     return response.json()
+
+
+def test_register_works():
+    credentials = unique_credentials()
+
+    with TestClient(app) as client:
+        response = client.post("/register", json=credentials)
+
+    assert response.status_code == 200
+    assert response.json() == {"username": credentials["username"]}
+
+
+def test_login_returns_token():
+    credentials = unique_credentials()
+
+    with TestClient(app) as client:
+        register_response = client.post("/register", json=credentials)
+        login_response = client.post("/login", json=credentials)
+
+    assert register_response.status_code == 200
+    assert login_response.status_code == 200
+
+    data = login_response.json()
+    assert data["token_type"] == "bearer"
+    assert data["access_token"]
+    assert data["access_token"].count(".") == 2
+
+
+def test_scan_without_token_is_rejected():
+    with TestClient(app) as client:
+        response = client.post("/scan", json=SAFE_EMAIL)
+
+    assert response.status_code == 401
+
+
+def test_scan_with_valid_token_works():
+    data = scan(SAFE_EMAIL)
+
+    assert EXPECTED_SCAN_FIELDS.issubset(data.keys())
+    assert data["label"] == "Low Risk"
 
 
 def test_nlp_flags_urgency():

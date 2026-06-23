@@ -1,8 +1,21 @@
 from pathlib import Path
 import joblib
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 
-from schemas import EmailScanRequest, EmailScanResponse
+from auth import (
+    authenticate_user,
+    create_access_token,
+    get_current_user,
+    register_user,
+)
+from schemas import (
+    EmailScanRequest,
+    EmailScanResponse,
+    TokenResponse,
+    UserCredentials,
+    UserResponse,
+)
 from scoring import (
     calculate_final_score,
     has_bec_pattern,
@@ -18,6 +31,17 @@ app = FastAPI(
     title="Threatlens API",
     description="API for scanning emails for potential phishing threats using ML and heuristic rules.",
     version="1.0.2"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -47,8 +71,42 @@ def root():
     }
 
 
+@app.post("/register", response_model=UserResponse)
+def register(credentials: UserCredentials):
+    """
+    Registers a local development user.
+
+    Current limitation:
+    users are stored in memory and are lost when the API process restarts.
+    """
+    try:
+        return register_user(credentials.username, credentials.password)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post("/login", response_model=TokenResponse)
+def login(credentials: UserCredentials):
+    """
+    Authenticates a user and returns a JWT bearer token.
+    """
+    user = authenticate_user(credentials.username, credentials.password)
+
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return TokenResponse(access_token=create_access_token(user["username"]))
+
+
 @app.post("/scan", response_model=EmailScanResponse)
-def scan_email(request: EmailScanRequest):
+def scan_email(
+    request: EmailScanRequest,
+    current_user: dict = Depends(get_current_user)
+):
     """
     Scans an email and returns:
     - ML score
@@ -59,6 +117,8 @@ def scan_email(request: EmailScanRequest):
     - Risk label
     - Reasons
     """
+    _ = current_user
+
     if model is None:
         raise HTTPException(status_code=500, detail="ML model is not loaded")
 

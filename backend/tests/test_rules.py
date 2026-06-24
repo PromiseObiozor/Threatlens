@@ -2,10 +2,10 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
-from main import app
-from rules.nlp_rules import analyse_nlp
-from rules.url_rules import analyse_urls
-from scoring import calculate_final_score, label_from_score
+from backend.main import app
+from backend.rules.nlp_rules import analyse_nlp
+from backend.rules.url_rules import analyse_urls
+from backend.scoring import calculate_final_score, label_from_score
 
 
 EXPECTED_SCAN_FIELDS = {

@@ -1,5 +1,7 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional
+from datetime import datetime
+
 
 
 class UserCredentials(BaseModel):
@@ -33,23 +35,26 @@ class EmailScanResponse(BaseModel):
     reasons: list[str]
 
 
+class ScanHistoryResponse(BaseModel):
+    id: int
+    subject: str
+    sender: str
+    reply_to: Optional[str]
+    body_preview: str
 
-"""
-class Attachment(BaseModel):
-    name: str
+    risk_score: int
+    label: str
 
-class ScanRequest(BaseModel):
-    sender: str = ""
-    reply_to: str = ""
-    subject: str = ""
-    body: str = Field(..., min_length=5)        #requires minimum of 5 chars 
-    raw_headers: str = ""
-    attachments: List[Attachment] = []
+    ml_score: int
+    nlp_score: int
+    url_score: int
+    metadata_score: int
 
-class Finding(BaseModel):
-    id: str
-    severity: str                               #it will be either "low" | "medium" | "high" | "critical"
-    title: str
-    detail: str
-    evidence: Optional[str] = None 
-"""
+    reasons: list[str]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+

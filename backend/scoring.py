@@ -1,4 +1,111 @@
 BEC_CATEGORIES = {"urgency", "secrecy", "financial_request"}
+LOW_VALUE_MODEL_TERMS = {"com", "http", "https", "www"}
+
+
+def _rule_evidence_terms(findings: list[dict], limit: int = 8) -> list[str]:
+    """
+    Fallback when the ML pipeline cannot expose term contributions safely.
+    Uses existing NLP rule evidence so the response still contains useful terms.
+    """
+    terms = []
+
+    for finding in findings:
+        evidence = finding.get("evidence", "")
+
+        for item in evidence.split(","):
+            term = item.strip().lower()
+
+            if term and term not in terms:
+                terms.append(term)
+
+            if len(terms) >= limit:
+                return terms
+
+    return terms
+
+
+def extract_ml_suspicious_words(
+    model,
+    text: str,
+    nlp_findings: list[dict] | None = None,
+    limit: int = 8,
+) -> list[str]:
+    """
+    Returns terms from this email that contributed most strongly toward the
+    phishing/spam class in the existing TF-IDF + linear classifier pipeline.
+
+    If the loaded model does not safely expose feature names and coefficients,
+    falls back to suspicious terms already found by the NLP rules.
+    """
+    nlp_findings = nlp_findings or []
+
+    try:
+        named_steps = getattr(model, "named_steps", {})
+        vectorizer = named_steps.get("tfidf")
+        classifier = named_steps.get("classifier")
+
+        if vectorizer is None or classifier is None:
+            for _, step in getattr(model, "steps", []):
+                if vectorizer is None and hasattr(step, "get_feature_names_out"):
+                    vectorizer = step
+                if classifier is None and hasattr(step, "coef_"):
+                    classifier = step
+
+        if vectorizer is None or classifier is None:
+            raise ValueError("Model pipeline does not expose TF-IDF coefficients")
+
+        feature_names = vectorizer.get_feature_names_out()
+        coefficients = classifier.coef_
+
+        if coefficients.ndim != 2 or coefficients.shape[1] != len(feature_names):
+            raise ValueError("Model coefficients do not match TF-IDF features")
+
+        classes = list(getattr(classifier, "classes_", []))
+
+        if len(classes) == 2 and 1 in classes:
+            spam_class_index = classes.index(1)
+            phishing_coefficients = (
+                coefficients[0]
+                if spam_class_index == 1
+                else -coefficients[0]
+            )
+        elif coefficients.shape[0] == 1:
+            phishing_coefficients = coefficients[0]
+        else:
+            raise ValueError("Cannot identify phishing class coefficients")
+
+        vector = vectorizer.transform([text])
+        row = vector[0]
+        contributions = []
+
+        for feature_index, tfidf_value in zip(row.indices, row.data):
+            coefficient = phishing_coefficients[feature_index]
+            contribution = tfidf_value * coefficient
+            term = feature_names[feature_index].strip().lower()
+
+            if (
+                contribution > 0
+                and any(char.isalpha() for char in term)
+                and term not in LOW_VALUE_MODEL_TERMS
+            ):
+                contributions.append((contribution, term))
+
+        contributions.sort(reverse=True)
+
+        suspicious_terms = []
+        for _, term in contributions:
+            if term not in suspicious_terms:
+                suspicious_terms.append(term)
+
+            if len(suspicious_terms) >= limit:
+                break
+
+        if suspicious_terms:
+            return suspicious_terms
+    except Exception:
+        pass
+
+    return _rule_evidence_terms(nlp_findings, limit=limit)
 
 
 def label_from_score(score: int) -> str:

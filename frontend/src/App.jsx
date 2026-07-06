@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   TOKEN_STORAGE_KEY,
+  deleteHistoryItem,
+  getHistory,
   loginUser,
   registerUser,
   scanEmail,
@@ -50,6 +52,43 @@ function getRiskClass(label) {
   return "risk-low";
 }
 
+function formatDate(value) {
+  if (!value) {
+    return "";
+  }
+
+  return new Date(value).toLocaleString();
+}
+
+function ExplanationGroup({ title, items = [], terms = [] }) {
+  const hasItems = items.length > 0;
+  const hasTerms = terms.length > 0;
+
+  return (
+    <section className="explanation-group">
+      <h3>{title}</h3>
+
+      {hasTerms && (
+        <div className="term-list" aria-label="ML suspicious words">
+          {terms.map((term) => (
+            <span key={term}>{term}</span>
+          ))}
+        </div>
+      )}
+
+      {hasItems ? (
+        <ul>
+          {items.map((item, index) => (
+            <li key={`${item}-${index}`}>{item}</li>
+          ))}
+        </ul>
+      ) : (
+        !hasTerms && <p className="no-indicators">No indicators detected.</p>
+      )}
+    </section>
+  );
+}
+
 export default function App() {
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_STORAGE_KEY));
   const [username, setUsername] = useState(() => localStorage.getItem("threatlens_user") ?? "");
@@ -57,6 +96,8 @@ export default function App() {
   const [authForm, setAuthForm] = useState(EMPTY_AUTH);
   const [form, setForm] = useState(EMPTY_EMAIL);
   const [report, setReport] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [historyBusy, setHistoryBusy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
 
@@ -111,14 +152,65 @@ export default function App() {
     }
   };
 
-  const logout = () => {
+  const logout = useCallback(() => {
     localStorage.removeItem(TOKEN_STORAGE_KEY);
     localStorage.removeItem("threatlens_user");
     setToken(null);
     setUsername("");
     setReport(null);
+    setHistory([]);
     setMessage("");
-  };
+  }, []);
+
+  const loadHistory = useCallback(
+    async (activeToken = token, showErrors = true) => {
+      if (!activeToken) {
+        return;
+      }
+
+      try {
+        setHistory(await getHistory(activeToken));
+      } catch (error) {
+        if (error.response?.status === 401) {
+          logout();
+          return;
+        }
+
+        if (showErrors) {
+          setMessage(getErrorMessage(error, "History failed to load"));
+        }
+      }
+    },
+    [logout, token],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSavedScans() {
+      if (!token) {
+        return;
+      }
+
+      try {
+        const savedScans = await getHistory(token);
+
+        if (!cancelled) {
+          setHistory(savedScans);
+        }
+      } catch (error) {
+        if (!cancelled && error.response?.status === 401) {
+          logout();
+        }
+      }
+    }
+
+    loadSavedScans();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [logout, token]);
 
   const submitScan = async (event) => {
     event.preventDefault();
@@ -134,6 +226,7 @@ export default function App() {
       };
 
       setReport(await scanEmail(payload, token));
+      await loadHistory(token, false);
     } catch (error) {
       setMessage(getErrorMessage(error, "Scan failed"));
 
@@ -149,6 +242,35 @@ export default function App() {
     setForm(SAMPLES[sample]);
     setReport(null);
     setMessage("");
+  };
+
+  const removeHistoryItem = async (scanId) => {
+    setHistoryBusy(true);
+    setMessage("");
+
+    try {
+      await deleteHistoryItem(scanId, token);
+      setHistory((items) => items.filter((item) => item.id !== scanId));
+    } catch (error) {
+      setMessage(getErrorMessage(error, "History item could not be deleted"));
+
+      if (error.response?.status === 401) {
+        logout();
+      }
+    } finally {
+      setHistoryBusy(false);
+    }
+  };
+
+  const refreshHistory = async () => {
+    setHistoryBusy(true);
+    setMessage("");
+
+    try {
+      await loadHistory(token);
+    } finally {
+      setHistoryBusy(false);
+    }
   };
 
   if (!isAuthenticated) {
@@ -311,13 +433,32 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="reasons-block">
-                <h2>Reasons</h2>
-                <ul>
-                  {report.reasons.map((reason, index) => (
-                    <li key={`${reason}-${index}`}>{reason}</li>
-                  ))}
-                </ul>
+              <div className="explanation-block">
+                <h2>Detection Explanation</h2>
+
+                {report.explanation ? (
+                  <>
+                    <ExplanationGroup
+                      title="ML indicators"
+                      items={report.explanation.ml}
+                      terms={report.ml_suspicious_words ?? []}
+                    />
+                    <ExplanationGroup
+                      title="NLP rule triggers"
+                      items={report.explanation.nlp}
+                    />
+                    <ExplanationGroup
+                      title="URL indicators"
+                      items={report.explanation.url}
+                    />
+                    <ExplanationGroup
+                      title="Metadata indicators"
+                      items={report.explanation.metadata}
+                    />
+                  </>
+                ) : (
+                  <ExplanationGroup title="Reasons" items={report.reasons ?? []} />
+                )}
               </div>
             </>
           ) : (
@@ -327,6 +468,52 @@ export default function App() {
             </div>
           )}
         </aside>
+      </section>
+
+      <section className="history-panel">
+        <div className="history-heading">
+          <div>
+            <p className="eyebrow">Saved scans</p>
+            <h2>Scan history</h2>
+          </div>
+          <button
+            className="secondary-button"
+            disabled={historyBusy}
+            onClick={refreshHistory}
+            type="button"
+          >
+            {historyBusy ? "Loading..." : "Refresh"}
+          </button>
+        </div>
+
+        {history.length > 0 ? (
+          <ul className="history-list">
+            {history.map((item) => (
+              <li key={item.id}>
+                <div className="history-main">
+                  <strong>{item.subject}</strong>
+                  <span>{item.sender}</span>
+                  <small>{formatDate(item.created_at)}</small>
+                </div>
+                <div className="history-meta">
+                  <span className={`history-risk ${getRiskClass(item.label)}`}>
+                    {item.risk_score}/100 - {item.label}
+                  </span>
+                  <button
+                    className="secondary-button"
+                    disabled={historyBusy}
+                    onClick={() => removeHistoryItem(item.id)}
+                    type="button"
+                  >
+                    Delete
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="history-empty">No saved scans yet.</p>
+        )}
       </section>
     </main>
   );

@@ -1,5 +1,5 @@
-from pydantic import BaseModel, Field, EmailStr
-from typing import List, Optional
+from pydantic import BaseModel, Field
+from typing import Optional
 from datetime import datetime
 
 
@@ -25,6 +25,13 @@ class EmailScanRequest(BaseModel):
     reply_to: Optional[str] = Field(None, description="Optional Reply-To email address")
 
 
+class ScanExplanation(BaseModel):
+    ml: list[str] = Field(default_factory=list)
+    nlp: list[str] = Field(default_factory=list)
+    url: list[str] = Field(default_factory=list)
+    metadata: list[str] = Field(default_factory=list)
+
+
 class EmailScanResponse(BaseModel):
     risk_score: int
     label: str
@@ -33,6 +40,8 @@ class EmailScanResponse(BaseModel):
     url_score: int
     metadata_score: int
     reasons: list[str]
+    ml_suspicious_words: list[str] = Field(default_factory=list)
+    explanation: ScanExplanation = Field(default_factory=ScanExplanation)
 
 
 class ScanHistoryResponse(BaseModel):
@@ -55,6 +64,5 @@ class ScanHistoryResponse(BaseModel):
 
     class Config:
         from_attributes = True
-
 
 

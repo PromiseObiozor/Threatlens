@@ -16,6 +16,8 @@ EXPECTED_SCAN_FIELDS = {
     "url_score",
     "metadata_score",
     "reasons",
+    "ml_suspicious_words",
+    "explanation",
 }
 
 SAFE_EMAIL = {
@@ -119,6 +121,15 @@ def test_scan_without_token_is_rejected():
         response = client.post("/scan", json=SAFE_EMAIL)
 
     assert response.status_code == 401
+
+
+def test_history_without_token_is_rejected():
+    with TestClient(app) as client:
+        response = client.get("/history")
+        delete_response = client.delete("/history/1")
+
+    assert response.status_code == 401
+    assert delete_response.status_code == 401
 
 
 def test_scan_with_valid_token_works():
@@ -226,10 +237,45 @@ def test_scan_response_includes_all_scores():
 
     assert EXPECTED_SCAN_FIELDS.issubset(data.keys())
     assert isinstance(data["reasons"], list)
+    assert isinstance(data["ml_suspicious_words"], list)
+    assert set(data["explanation"].keys()) == {"ml", "nlp", "url", "metadata"}
     assert data["ml_score"] > 0
     assert data["nlp_score"] > 0
     assert data["url_score"] > 0
     assert data["metadata_score"] > 0
+
+
+def test_scan_response_includes_reasons_and_ml_suspicious_words():
+    data = scan(PHISHING_EMAIL)
+
+    assert data["reasons"]
+    assert data["ml_suspicious_words"]
+    assert "account" in data["ml_suspicious_words"]
+    assert data["explanation"]["ml"]
+    assert data["explanation"]["nlp"]
+    assert data["explanation"]["url"]
+    assert data["explanation"]["metadata"]
+
+
+def test_history_still_works_after_scan():
+    with TestClient(app) as client:
+        headers = register_and_login(client)
+
+        scan_response = client.post(
+            "/scan",
+            json=PHISHING_EMAIL,
+            headers=headers,
+        )
+        history_response = client.get("/history", headers=headers)
+
+    assert scan_response.status_code == 200
+    assert history_response.status_code == 200
+
+    history = history_response.json()
+    assert len(history) == 1
+    assert history[0]["subject"] == PHISHING_EMAIL["subject"]
+    assert history[0]["reasons"]
+    assert history[0]["risk_score"] == scan_response.json()["risk_score"]
 
 
 def test_scan_safe_email_returns_low_risk():
@@ -242,6 +288,7 @@ def test_scan_safe_email_returns_low_risk():
     assert data["url_score"] == 0
     assert data["metadata_score"] == 0
     assert data["reasons"] == ["No major suspicious indicators detected"]
+    assert data["ml_suspicious_words"] == []
 
 
 def test_scan_obvious_phishing_email_returns_high_risk():

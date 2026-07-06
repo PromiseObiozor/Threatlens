@@ -24,6 +24,7 @@ from .schemas import (
 )
 from .scoring import (
     calculate_final_score,
+    extract_ml_suspicious_words,
     has_bec_pattern,
     has_reply_to_mismatch,
     label_from_score,
@@ -136,6 +137,8 @@ def scan_email(
     - Final risk score
     - Risk label
     - Reasons
+    - ML suspicious words
+    - Grouped explanation
 
     The scan result is also saved to the logged-in user's scan history.
     """
@@ -156,6 +159,15 @@ def scan_email(
 
     nlp_result = analyse_nlp(combined_text)
     nlp_score = nlp_result["score"]
+    ml_suspicious_words = (
+        extract_ml_suspicious_words(
+            model=model,
+            text=combined_text,
+            nlp_findings=nlp_result["findings"],
+        )
+        if ml_score >= 70
+        else []
+    )
 
     nlp_categories = {
         finding["id"].replace("nlp_", "", 1)
@@ -182,27 +194,28 @@ def scan_email(
 
     label = label_from_score(final_score)
 
-    reasons = []
+    ml_reasons = []
+    nlp_reasons = []
 
     if ml_score >= 70:
-        reasons.append(
+        ml_reasons.append(
             f"ML model detected suspicious email content with score {ml_score}"
         )
 
     if ml_score >= 85 and (
         nlp_score > 0 or url_score > 0 or metadata_score > 0
     ):
-        reasons.append(
+        ml_reasons.append(
             "Very high ML score is reinforced by rule-based indicators"
         )
 
     if has_bec_pattern(nlp_categories):
-        reasons.append(
+        nlp_reasons.append(
             "BEC pattern detected: urgency, secrecy, and financial request cues appear together"
         )
 
         if reply_to_mismatch:
-            reasons.append(
+            nlp_reasons.append(
                 "BEC escalation: payment request is combined with a Reply-To domain mismatch"
             )
 
@@ -213,10 +226,14 @@ def scan_email(
         if evidence:
             reason = f"{reason} Evidence: {evidence}"
 
-        reasons.append(reason)
+        nlp_reasons.append(reason)
 
-    reasons.extend(url_reasons)
-    reasons.extend(metadata_reasons)
+    reasons = [
+        *ml_reasons,
+        *nlp_reasons,
+        *url_reasons,
+        *metadata_reasons,
+    ]
 
     if not reasons:
         reasons.append("No major suspicious indicators detected")
@@ -229,6 +246,13 @@ def scan_email(
         url_score=url_score,
         metadata_score=metadata_score,
         reasons=reasons,
+        ml_suspicious_words=ml_suspicious_words,
+        explanation={
+            "ml": ml_reasons,
+            "nlp": nlp_reasons,
+            "url": url_reasons,
+            "metadata": metadata_reasons,
+        },
     )
 
     saved_scan = ScanHistory(

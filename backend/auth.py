@@ -9,18 +9,18 @@ from typing import Any
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.orm import Session
+
+from .database import get_db
+from .models import User
 
 
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_SECONDS = 60 * 60
-JWT_SECRET = os.getenv("THREATLENS_JWT_SECRET", "change-this-dev-secret")
+JWT_SECRET = os.getenv("THREATLENS_JWT_SECRET") or secrets.token_urlsafe(32)
 PASSWORD_ITERATIONS = 120_000
 
 security = HTTPBearer(auto_error=False)
-
-# In-memory user storage for local development only.
-# Users are lost whenever the API process restarts.
-USERS: dict[str, dict[str, str]] = {}
 
 
 def _base64url_encode(data: bytes) -> str:
@@ -67,31 +67,52 @@ def verify_password(password: str, password_hash: str) -> bool:
     return hmac.compare_digest(digest, expected_digest)
 
 
-def register_user(username: str, password: str) -> dict[str, str]:
+def get_user_by_username(db: Session, username: str) -> User | None:
+    normalized_username = _normalize_username(username)
+
+    return (
+        db.query(User)
+        .filter(User.username == normalized_username)
+        .first()
+    )
+
+
+def register_user(
+    db: Session,
+    username: str,
+    password: str,
+) -> dict[str, str]:
     normalized_username = _normalize_username(username)
 
     if not normalized_username:
         raise ValueError("Username is required")
 
-    if normalized_username in USERS:
+    if get_user_by_username(db, normalized_username) is not None:
         raise ValueError("Username is already registered")
 
-    USERS[normalized_username] = {
-        "username": normalized_username,
-        "password_hash": hash_password(password),
-    }
+    user = User(
+        username=normalized_username,
+        hashed_password=hash_password(password),
+    )
 
-    return {"username": normalized_username}
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    return {"username": user.username}
 
 
-def authenticate_user(username: str, password: str) -> dict[str, str] | None:
-    normalized_username = _normalize_username(username)
-    user = USERS.get(normalized_username)
+def authenticate_user(
+    db: Session,
+    username: str,
+    password: str,
+) -> dict[str, str] | None:
+    user = get_user_by_username(db, username)
 
-    if not user or not verify_password(password, user["password_hash"]):
+    if user is None or not verify_password(password, user.hashed_password):
         return None
 
-    return {"username": user["username"]}
+    return {"username": user.username}
 
 
 def create_access_token(username: str) -> str:
@@ -150,7 +171,8 @@ def decode_access_token(token: str) -> dict[str, Any]:
 
 def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
-) -> dict[str, str]:
+    db: Session = Depends(get_db),
+) -> User:
     if credentials is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -168,12 +190,13 @@ def get_current_user(
         ) from error
 
     username = _normalize_username(payload["sub"])
+    user = get_user_by_username(db, username)
 
-    if username not in USERS:
+    if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User no longer exists",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    return {"username": username}
+    return user

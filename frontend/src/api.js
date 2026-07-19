@@ -20,3 +20,19 @@ export const scanEmail = (payload, token) =>
       },
     })
     .then((response) => response.data);
+
+export const getHistory = (token) =>
+  api
+    .get("/history", {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+    .then((response) => response.data);
+
+export const deleteHistoryItem = (scanId, token) =>
+  api.delete(`/history/${scanId}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });

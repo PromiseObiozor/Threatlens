@@ -1,16 +1,36 @@
-# React + Vite
+# ThreatLens frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+This directory contains the React/Vite interface for ThreatLens.
 
-Currently, two official plugins are available:
+The UI deliberately uses plain React components, Axios, inline SVG icons, and
+normal CSS. It has no component framework, chart library, router, animation
+library, or external state-management dependency.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Main files
 
-## React Compiler
+- `src/App.jsx`: session, form, scan, report, and history state.
+- `src/components/AuthScreen.jsx`: login and registration screen.
+- `src/components/ConsoleHeader.jsx`: branding, real history counters, user
+  controls, and About link.
+- `src/components/EmailInputPanel.jsx`: field/raw tabs, parser, samples, and
+  scan form.
+- `src/components/ThreatReport.jsx`: gauge, four layer scores, findings, and
+  safety guidance.
+- `src/components/HistoryPanel.jsx`: saved record selection and confirmed
+  deletion.
+- `src/components/AboutPage.jsx`: methodology, stack, scoring, and limitations.
+- `src/emailParser.js`: raw source and supported Gmail-style text parsing.
+- `src/reportUtils.js`: risk copy, counters, grouping, and date formatting.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Commands
 
-## Expanding the ESLint configuration
+```bash
+npm install
+npm run dev
+npm test
+npm run lint
+npm run build
+```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+The API URL is `http://localhost:8000` by default. Override it with
+`VITE_API_BASE_URL`.

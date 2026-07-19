@@ -2,10 +2,10 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
-from main import app
-from rules.nlp_rules import analyse_nlp
-from rules.url_rules import analyse_urls
-from scoring import calculate_final_score, label_from_score
+from backend.main import app
+from backend.rules.nlp_rules import analyse_nlp
+from backend.rules.url_rules import analyse_urls
+from backend.scoring import calculate_final_score, label_from_score
 
 
 EXPECTED_SCAN_FIELDS = {
@@ -16,6 +16,8 @@ EXPECTED_SCAN_FIELDS = {
     "url_score",
     "metadata_score",
     "reasons",
+    "ml_suspicious_words",
+    "explanation",
 }
 
 SAFE_EMAIL = {
@@ -114,11 +116,34 @@ def test_login_returns_token():
     assert data["access_token"].count(".") == 2
 
 
+def test_cors_allows_vite_production_preview():
+    with TestClient(app) as client:
+        response = client.options(
+            "/login",
+            headers={
+                "Origin": "http://localhost:4173",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:4173"
+
+
 def test_scan_without_token_is_rejected():
     with TestClient(app) as client:
         response = client.post("/scan", json=SAFE_EMAIL)
 
     assert response.status_code == 401
+
+
+def test_history_without_token_is_rejected():
+    with TestClient(app) as client:
+        response = client.get("/history")
+        delete_response = client.delete("/history/1")
+
+    assert response.status_code == 401
+    assert delete_response.status_code == 401
 
 
 def test_scan_with_valid_token_works():
@@ -226,10 +251,88 @@ def test_scan_response_includes_all_scores():
 
     assert EXPECTED_SCAN_FIELDS.issubset(data.keys())
     assert isinstance(data["reasons"], list)
+    assert isinstance(data["ml_suspicious_words"], list)
+    assert set(data["explanation"].keys()) == {"ml", "nlp", "url", "metadata"}
     assert data["ml_score"] > 0
     assert data["nlp_score"] > 0
     assert data["url_score"] > 0
     assert data["metadata_score"] > 0
+
+
+def test_scan_response_includes_grouped_reasons_and_ml_terms():
+    data = scan(PHISHING_EMAIL)
+
+    assert data["reasons"]
+    assert data["ml_suspicious_words"]
+    assert "account" in data["ml_suspicious_words"]
+    assert data["explanation"]["ml"]
+    assert data["explanation"]["nlp"]
+    assert data["explanation"]["url"]
+    assert data["explanation"]["metadata"]
+
+
+def test_history_contains_saved_scan_data():
+    with TestClient(app) as client:
+        headers = register_and_login(client)
+
+        scan_response = client.post(
+            "/scan",
+            json=PHISHING_EMAIL,
+            headers=headers,
+        )
+        history_response = client.get("/history", headers=headers)
+
+    assert scan_response.status_code == 200
+    assert history_response.status_code == 200
+
+    history = history_response.json()
+    assert len(history) == 1
+    assert history[0]["subject"] == PHISHING_EMAIL["subject"]
+    assert history[0]["sender"] == PHISHING_EMAIL["sender"]
+    assert history[0]["reasons"]
+    assert history[0]["created_at"]
+    assert history[0]["created_at"].endswith("Z")
+    assert history[0]["risk_score"] == scan_response.json()["risk_score"]
+
+
+def test_history_item_can_be_deleted():
+    with TestClient(app) as client:
+        headers = register_and_login(client)
+        scan_response = client.post("/scan", json=SAFE_EMAIL, headers=headers)
+        history = client.get("/history", headers=headers).json()
+        delete_response = client.delete(
+            f"/history/{history[0]['id']}",
+            headers=headers,
+        )
+        remaining_history = client.get("/history", headers=headers)
+
+    assert scan_response.status_code == 200
+    assert delete_response.status_code == 204
+    assert remaining_history.status_code == 200
+    assert remaining_history.json() == []
+
+
+def test_user_cannot_delete_another_users_scan():
+    with TestClient(app) as client:
+        first_user_headers = register_and_login(client)
+        second_user_headers = register_and_login(client)
+
+        client.post("/scan", json=SAFE_EMAIL, headers=first_user_headers)
+        first_user_history = client.get(
+            "/history",
+            headers=first_user_headers,
+        ).json()
+        delete_response = client.delete(
+            f"/history/{first_user_history[0]['id']}",
+            headers=second_user_headers,
+        )
+        remaining_history = client.get(
+            "/history",
+            headers=first_user_headers,
+        )
+
+    assert delete_response.status_code == 404
+    assert len(remaining_history.json()) == 1
 
 
 def test_scan_safe_email_returns_low_risk():
@@ -242,6 +345,7 @@ def test_scan_safe_email_returns_low_risk():
     assert data["url_score"] == 0
     assert data["metadata_score"] == 0
     assert data["reasons"] == ["No major suspicious indicators detected"]
+    assert data["ml_suspicious_words"] == []
 
 
 def test_scan_obvious_phishing_email_returns_high_risk():

@@ -1,5 +1,7 @@
-from pydantic import BaseModel, Field
-from typing import List, Optional
+from datetime import UTC, datetime
+from typing import Optional
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class UserCredentials(BaseModel):
@@ -23,6 +25,13 @@ class EmailScanRequest(BaseModel):
     reply_to: Optional[str] = Field(None, description="Optional Reply-To email address")
 
 
+class ScanExplanation(BaseModel):
+    ml: list[str] = Field(default_factory=list)
+    nlp: list[str] = Field(default_factory=list)
+    url: list[str] = Field(default_factory=list)
+    metadata: list[str] = Field(default_factory=list)
+
+
 class EmailScanResponse(BaseModel):
     risk_score: int
     label: str
@@ -31,25 +40,34 @@ class EmailScanResponse(BaseModel):
     url_score: int
     metadata_score: int
     reasons: list[str]
+    ml_suspicious_words: list[str] = Field(default_factory=list)
+    explanation: ScanExplanation = Field(default_factory=ScanExplanation)
 
 
+class ScanHistoryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
 
-"""
-class Attachment(BaseModel):
-    name: str
+    id: int
+    subject: str
+    sender: str
+    reply_to: Optional[str]
+    body_preview: str
 
-class ScanRequest(BaseModel):
-    sender: str = ""
-    reply_to: str = ""
-    subject: str = ""
-    body: str = Field(..., min_length=5)        #requires minimum of 5 chars 
-    raw_headers: str = ""
-    attachments: List[Attachment] = []
+    risk_score: int
+    label: str
 
-class Finding(BaseModel):
-    id: str
-    severity: str                               #it will be either "low" | "medium" | "high" | "critical"
-    title: str
-    detail: str
-    evidence: Optional[str] = None 
-"""
+    ml_score: int
+    nlp_score: int
+    url_score: int
+    metadata_score: int
+
+    reasons: list[str]
+    created_at: datetime
+
+    @field_validator("created_at", mode="before")
+    @classmethod
+    def treat_sqlite_timestamp_as_utc(cls, value):
+        if isinstance(value, datetime) and value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+
+        return value

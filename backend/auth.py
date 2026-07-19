@@ -38,6 +38,7 @@ def _normalize_username(username: str) -> str:
 
 def hash_password(password: str) -> str:
     salt = secrets.token_hex(16)
+
     digest = hashlib.pbkdf2_hmac(
         "sha256",
         password.encode("utf-8"),
@@ -87,7 +88,9 @@ def register_user(
     if not normalized_username:
         raise ValueError("Username is required")
 
-    if get_user_by_username(db, normalized_username) is not None:
+    existing_user = get_user_by_username(db, normalized_username)
+
+    if existing_user is not None:
         raise ValueError("Username is already registered")
 
     user = User(
@@ -109,7 +112,10 @@ def authenticate_user(
 ) -> dict[str, str] | None:
     user = get_user_by_username(db, username)
 
-    if user is None or not verify_password(password, user.hashed_password):
+    if user is None:
+        return None
+
+    if not verify_password(password, user.hashed_password):
         return None
 
     return {"username": user.username}
@@ -120,6 +126,7 @@ def create_access_token(username: str) -> str:
         "alg": JWT_ALGORITHM,
         "typ": "JWT",
     }
+
     payload = {
         "sub": _normalize_username(username),
         "exp": int(time.time()) + ACCESS_TOKEN_EXPIRE_SECONDS,
@@ -128,10 +135,13 @@ def create_access_token(username: str) -> str:
     encoded_header = _base64url_encode(
         json.dumps(header, separators=(",", ":")).encode("utf-8")
     )
+
     encoded_payload = _base64url_encode(
         json.dumps(payload, separators=(",", ":")).encode("utf-8")
     )
+
     unsigned_token = f"{encoded_header}.{encoded_payload}"
+
     signature = hmac.new(
         JWT_SECRET.encode("utf-8"),
         unsigned_token.encode("ascii"),
@@ -148,11 +158,13 @@ def decode_access_token(token: str) -> dict[str, Any]:
         raise ValueError("Invalid token format") from error
 
     unsigned_token = f"{encoded_header}.{encoded_payload}"
+
     expected_signature = hmac.new(
         JWT_SECRET.encode("utf-8"),
         unsigned_token.encode("ascii"),
         hashlib.sha256,
     ).digest()
+
     provided_signature = _base64url_decode(encoded_signature)
 
     if not hmac.compare_digest(expected_signature, provided_signature):

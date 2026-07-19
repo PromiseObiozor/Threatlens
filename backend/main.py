@@ -139,9 +139,10 @@ def scan_email(
     - Final risk score
     - Risk label
     - Reasons
-    - ML terms and reasons grouped by detection layer
+    - ML suspicious words
+    - Grouped explanation
 
-    The result is also saved to the logged-in user's scan history.
+    The scan result is also saved to the logged-in user's scan history.
     """
     if model is None:
         raise HTTPException(status_code=500, detail="ML model is not loaded")
@@ -181,6 +182,7 @@ def scan_email(
         sender=request.sender,
         reply_to=request.reply_to,
     )
+
     reply_to_mismatch = has_reply_to_mismatch(metadata_reasons)
 
     final_score = calculate_final_score(
@@ -202,7 +204,9 @@ def scan_email(
             f"ML model detected suspicious email content with score {ml_score}"
         )
 
-    if ml_score >= 85 and (nlp_score > 0 or url_score > 0 or metadata_score > 0):
+    if ml_score >= 85 and (
+        nlp_score > 0 or url_score > 0 or metadata_score > 0
+    ):
         ml_reasons.append(
             "Very high ML score is reinforced by rule-based indicators"
         )

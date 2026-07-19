@@ -1,7 +1,7 @@
-from pydantic import BaseModel, Field
+from datetime import UTC, datetime
 from typing import Optional
-from datetime import datetime
 
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class UserCredentials(BaseModel):
@@ -45,6 +45,8 @@ class EmailScanResponse(BaseModel):
 
 
 class ScanHistoryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     subject: str
     sender: str
@@ -62,7 +64,10 @@ class ScanHistoryResponse(BaseModel):
     reasons: list[str]
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    @field_validator("created_at", mode="before")
+    @classmethod
+    def treat_sqlite_timestamp_as_utc(cls, value):
+        if isinstance(value, datetime) and value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
 
-
+        return value

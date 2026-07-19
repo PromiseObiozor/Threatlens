@@ -17,7 +17,7 @@ from .models import User
 
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_SECONDS = 60 * 60
-JWT_SECRET = os.getenv("THREATLENS_JWT_SECRET", "change-this-dev-secret")
+JWT_SECRET = os.getenv("THREATLENS_JWT_SECRET") or secrets.token_urlsafe(32)
 PASSWORD_ITERATIONS = 120_000
 
 security = HTTPBearer(auto_error=False)

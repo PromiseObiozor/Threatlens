@@ -45,6 +45,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://localhost:4173",
+        "http://127.0.0.1:4173",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -60,7 +62,7 @@ model = None
 @app.on_event("startup")
 def startup_event():
     """
-    Creates database tables and loads the trained ML model when the API starts.
+    Creates database tables and loads the trained ML model.
     """
     global model
 
@@ -86,7 +88,7 @@ def register(
     db: Session = Depends(get_db),
 ):
     """
-    Registers a user and stores the account permanently in SQLite.
+    Registers a user and stores the account in SQLite.
     """
     try:
         return register_user(
@@ -282,7 +284,7 @@ def get_scan_history(
     db: Session = Depends(get_db),
 ):
     """
-    Returns the logged-in user's saved scan history.
+    Returns the logged-in user's scans, newest first.
     """
     scans = (
         db.query(ScanHistory)

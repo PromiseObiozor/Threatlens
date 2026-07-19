@@ -2,10 +2,13 @@ BEC_CATEGORIES = {"urgency", "secrecy", "financial_request"}
 LOW_VALUE_MODEL_TERMS = {"com", "http", "https", "www"}
 
 
-def _rule_evidence_terms(findings: list[dict], limit: int = 8) -> list[str]:
+def _rule_evidence_terms(
+    findings: list[dict],
+    limit: int = 8,
+) -> list[str]:
     """
-    Fallback when the ML pipeline cannot expose term contributions safely.
-    Uses existing NLP rule evidence so the response still contains useful terms.
+    Falls back to existing NLP evidence if the ML pipeline cannot expose
+    individual term contributions.
     """
     terms = []
 
@@ -31,11 +34,8 @@ def extract_ml_suspicious_words(
     limit: int = 8,
 ) -> list[str]:
     """
-    Returns terms from this email that contributed most strongly toward the
-    phishing/spam class in the existing TF-IDF + linear classifier pipeline.
-
-    If the loaded model does not safely expose feature names and coefficients,
-    falls back to suspicious terms already found by the NLP rules.
+    Returns terms in this email with the strongest positive contribution to
+    the spam class in the existing TF-IDF and linear-classifier pipeline.
     """
     nlp_findings = nlp_findings or []
 
@@ -48,6 +48,7 @@ def extract_ml_suspicious_words(
             for _, step in getattr(model, "steps", []):
                 if vectorizer is None and hasattr(step, "get_feature_names_out"):
                     vectorizer = step
+
                 if classifier is None and hasattr(step, "coef_"):
                     classifier = step
 
@@ -72,10 +73,9 @@ def extract_ml_suspicious_words(
         elif coefficients.shape[0] == 1:
             phishing_coefficients = coefficients[0]
         else:
-            raise ValueError("Cannot identify phishing class coefficients")
+            raise ValueError("Cannot identify the spam class coefficients")
 
-        vector = vectorizer.transform([text])
-        row = vector[0]
+        row = vectorizer.transform([text])[0]
         contributions = []
 
         for feature_index, tfidf_value in zip(row.indices, row.data):
@@ -85,7 +85,7 @@ def extract_ml_suspicious_words(
 
             if (
                 contribution > 0
-                and any(char.isalpha() for char in term)
+                and any(character.isalpha() for character in term)
                 and term not in LOW_VALUE_MODEL_TERMS
             ):
                 contributions.append((contribution, term))
@@ -93,6 +93,7 @@ def extract_ml_suspicious_words(
         contributions.sort(reverse=True)
 
         suspicious_terms = []
+
         for _, term in contributions:
             if term not in suspicious_terms:
                 suspicious_terms.append(term)
@@ -103,6 +104,7 @@ def extract_ml_suspicious_words(
         if suspicious_terms:
             return suspicious_terms
     except Exception:
+        # Different trained model types may not expose linear coefficients.
         pass
 
     return _rule_evidence_terms(nlp_findings, limit=limit)

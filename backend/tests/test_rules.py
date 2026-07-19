@@ -116,6 +116,20 @@ def test_login_returns_token():
     assert data["access_token"].count(".") == 2
 
 
+def test_cors_allows_vite_production_preview():
+    with TestClient(app) as client:
+        response = client.options(
+            "/login",
+            headers={
+                "Origin": "http://localhost:4173",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:4173"
+
+
 def test_scan_without_token_is_rejected():
     with TestClient(app) as client:
         response = client.post("/scan", json=SAFE_EMAIL)
@@ -245,7 +259,7 @@ def test_scan_response_includes_all_scores():
     assert data["metadata_score"] > 0
 
 
-def test_scan_response_includes_reasons_and_ml_suspicious_words():
+def test_scan_response_includes_grouped_reasons_and_ml_terms():
     data = scan(PHISHING_EMAIL)
 
     assert data["reasons"]
@@ -257,7 +271,7 @@ def test_scan_response_includes_reasons_and_ml_suspicious_words():
     assert data["explanation"]["metadata"]
 
 
-def test_history_still_works_after_scan():
+def test_history_contains_saved_scan_data():
     with TestClient(app) as client:
         headers = register_and_login(client)
 
@@ -274,8 +288,51 @@ def test_history_still_works_after_scan():
     history = history_response.json()
     assert len(history) == 1
     assert history[0]["subject"] == PHISHING_EMAIL["subject"]
+    assert history[0]["sender"] == PHISHING_EMAIL["sender"]
     assert history[0]["reasons"]
+    assert history[0]["created_at"]
+    assert history[0]["created_at"].endswith("Z")
     assert history[0]["risk_score"] == scan_response.json()["risk_score"]
+
+
+def test_history_item_can_be_deleted():
+    with TestClient(app) as client:
+        headers = register_and_login(client)
+        scan_response = client.post("/scan", json=SAFE_EMAIL, headers=headers)
+        history = client.get("/history", headers=headers).json()
+        delete_response = client.delete(
+            f"/history/{history[0]['id']}",
+            headers=headers,
+        )
+        remaining_history = client.get("/history", headers=headers)
+
+    assert scan_response.status_code == 200
+    assert delete_response.status_code == 204
+    assert remaining_history.status_code == 200
+    assert remaining_history.json() == []
+
+
+def test_user_cannot_delete_another_users_scan():
+    with TestClient(app) as client:
+        first_user_headers = register_and_login(client)
+        second_user_headers = register_and_login(client)
+
+        client.post("/scan", json=SAFE_EMAIL, headers=first_user_headers)
+        first_user_history = client.get(
+            "/history",
+            headers=first_user_headers,
+        ).json()
+        delete_response = client.delete(
+            f"/history/{first_user_history[0]['id']}",
+            headers=second_user_headers,
+        )
+        remaining_history = client.get(
+            "/history",
+            headers=first_user_headers,
+        )
+
+    assert delete_response.status_code == 404
+    assert len(remaining_history.json()) == 1
 
 
 def test_scan_safe_email_returns_low_risk():

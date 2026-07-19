@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   TOKEN_STORAGE_KEY,
   deleteHistoryItem,
@@ -7,6 +7,14 @@ import {
   registerUser,
   scanEmail,
 } from "./api";
+import AboutPage from "./components/AboutPage";
+import AuthScreen from "./components/AuthScreen";
+import ConsoleHeader from "./components/ConsoleHeader";
+import EmailInputPanel from "./components/EmailInputPanel";
+import HistoryPanel from "./components/HistoryPanel";
+import ThreatReport from "./components/ThreatReport";
+import { getParserStatus, parseEmailText } from "./emailParser";
+import { getHistoryCounts } from "./reportUtils";
 import "./App.css";
 
 const SAMPLES = {
@@ -15,6 +23,12 @@ const SAMPLES = {
     reply_to: "",
     subject: "Monthly report",
     body: "Your monthly report is ready. View it here: https://dashboard.stripe.com/reports/monthly",
+  },
+  suspicious: {
+    sender: "director@project-partner.com",
+    reply_to: "director@project-partner.com",
+    subject: "Confidential vendor payment request",
+    body: "Please process payment for the new vendor today. Keep this confidential and do not call until I confirm the invoice details.",
   },
   malicious: {
     sender: "support@paypa1-secure.com",
@@ -37,484 +51,643 @@ const EMPTY_AUTH = {
 };
 
 function getErrorMessage(error, fallback) {
-  return error.response?.data?.detail ?? fallback;
-}
+  const detail = error.response?.data?.detail;
 
-function getRiskClass(label) {
-  if (label === "High Risk") {
-    return "risk-high";
+  if (typeof detail === "string") {
+    return detail;
   }
 
-  if (label === "Medium Risk") {
-    return "risk-medium";
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((item) => item?.msg)
+      .filter(Boolean);
+
+    if (messages.length > 0) {
+      return messages.join(" ");
+    }
   }
 
-  return "risk-low";
+  return fallback;
 }
 
-function formatDate(value) {
-  if (!value) {
-    return "";
+function getInitialView() {
+  return window.location.hash.toLowerCase() === "#about" ? "about" : "console";
+}
+
+function validateEmail(form) {
+  if (!form.sender.trim()) {
+    return "Sender / From is required.";
   }
 
-  return new Date(value).toLocaleString();
-}
+  if (!form.subject.trim()) {
+    return "Subject is required.";
+  }
 
-function ExplanationGroup({ title, items = [], terms = [] }) {
-  const hasItems = items.length > 0;
-  const hasTerms = terms.length > 0;
+  if (!form.body.trim()) {
+    return "Email body is required.";
+  }
 
-  return (
-    <section className="explanation-group">
-      <h3>{title}</h3>
-
-      {hasTerms && (
-        <div className="term-list" aria-label="ML suspicious words">
-          {terms.map((term) => (
-            <span key={term}>{term}</span>
-          ))}
-        </div>
-      )}
-
-      {hasItems ? (
-        <ul>
-          {items.map((item, index) => (
-            <li key={`${item}-${index}`}>{item}</li>
-          ))}
-        </ul>
-      ) : (
-        !hasTerms && <p className="no-indicators">No indicators detected.</p>
-      )}
-    </section>
-  );
+  return "";
 }
 
 export default function App() {
+  const [view, setView] = useState(getInitialView);
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_STORAGE_KEY));
-  const [username, setUsername] = useState(() => localStorage.getItem("threatlens_user") ?? "");
+  const [username, setUsername] = useState(
+    () => localStorage.getItem("threatlens_user") ?? "",
+  );
   const [authMode, setAuthMode] = useState("login");
   const [authForm, setAuthForm] = useState(EMPTY_AUTH);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authMessage, setAuthMessage] = useState("");
+
+  const [inputMode, setInputMode] = useState("fields");
   const [form, setForm] = useState(EMPTY_EMAIL);
+  const [rawEmail, setRawEmail] = useState("");
+  const [parserResult, setParserResult] = useState(null);
+  const [scanBusy, setScanBusy] = useState(false);
+  const [scanMessage, setScanMessage] = useState("");
+
   const [report, setReport] = useState(null);
+  const [reportMetadata, setReportMetadata] = useState(null);
+  const [reportEmail, setReportEmail] = useState(null);
+
   const [history, setHistory] = useState([]);
-  const [historyBusy, setHistoryBusy] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyMessage, setHistoryMessage] = useState("");
+  const [deletingId, setDeletingId] = useState(null);
+  const [selectedScanId, setSelectedScanId] = useState(null);
+  const [announcement, setAnnouncement] = useState("");
+
+  const sessionVersionRef = useRef(0);
+  const historyRequestRef = useRef(0);
+  const selectedScanIdRef = useRef(null);
 
   const isAuthenticated = Boolean(token);
+  const counts = useMemo(() => getHistoryCounts(history), [history]);
+  const parserStatus = parserResult
+    ? getParserStatus(parserResult, form)
+    : "";
+  const parserWarning = parserResult
+    ? ["sender", "reply_to", "subject", "body"].some(
+        (field) => !parserResult[field]?.trim(),
+      )
+    : false;
+
+  const isCurrentSession = useCallback(
+    (requestVersion, requestToken) =>
+      sessionVersionRef.current === requestVersion &&
+      localStorage.getItem(TOKEN_STORAGE_KEY) === requestToken,
+    [],
+  );
+
+  useEffect(() => {
+    const handleHashChange = () => setView(getInitialView());
+
+    window.addEventListener("hashchange", handleHashChange);
+
+    return () => window.removeEventListener("hashchange", handleHashChange);
+  }, []);
+
+  const setCurrentScanId = useCallback((scanId) => {
+    selectedScanIdRef.current = scanId;
+    setSelectedScanId(scanId);
+  }, []);
+
+  const clearReport = useCallback(() => {
+    setReport(null);
+    setReportMetadata(null);
+    setReportEmail(null);
+    setCurrentScanId(null);
+  }, [setCurrentScanId]);
+
+  const resetWorkspace = useCallback(() => {
+    setHistory([]);
+    setHistoryLoading(false);
+    setHistoryMessage("");
+    setDeletingId(null);
+    setScanBusy(false);
+    setAuthMode("login");
+    setAuthForm(EMPTY_AUTH);
+    setInputMode("fields");
+    setForm(EMPTY_EMAIL);
+    setRawEmail("");
+    setParserResult(null);
+    setScanMessage("");
+    setAnnouncement("");
+    clearReport();
+  }, [clearReport]);
+
+  const endSession = useCallback(
+    (reason = "") => {
+      sessionVersionRef.current += 1;
+      historyRequestRef.current += 1;
+      localStorage.removeItem(TOKEN_STORAGE_KEY);
+      localStorage.removeItem("threatlens_user");
+      setToken(null);
+      setUsername("");
+      resetWorkspace();
+      setAuthMessage(reason);
+    },
+    [resetWorkspace],
+  );
+
+  useEffect(() => {
+    const handleStorage = (event) => {
+      if (
+        event.key !== TOKEN_STORAGE_KEY &&
+        event.key !== "threatlens_user"
+      ) {
+        return;
+      }
+
+      const nextToken = localStorage.getItem(TOKEN_STORAGE_KEY);
+      const nextUsername = localStorage.getItem("threatlens_user") ?? "";
+
+      if (nextToken === token) {
+        setUsername(nextToken ? nextUsername : "");
+        return;
+      }
+
+      sessionVersionRef.current += 1;
+      historyRequestRef.current += 1;
+      resetWorkspace();
+      setToken(nextToken);
+      setUsername(nextToken ? nextUsername : "");
+      setAuthMessage(
+        nextToken ? "" : "You were signed out in another browser tab.",
+      );
+    };
+
+    window.addEventListener("storage", handleStorage);
+
+    return () => window.removeEventListener("storage", handleStorage);
+  }, [resetWorkspace, token]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSavedHistory() {
+      if (!token) {
+        return;
+      }
+
+      const requestVersion = sessionVersionRef.current;
+      const requestToken = token;
+      const requestId = ++historyRequestRef.current;
+      const isCurrentRequest = () =>
+        !cancelled &&
+        historyRequestRef.current === requestId &&
+        isCurrentSession(requestVersion, requestToken);
+
+      setHistoryLoading(true);
+      setHistoryMessage("");
+
+      try {
+        const savedScans = await getHistory(requestToken);
+
+        if (isCurrentRequest()) {
+          setHistory(savedScans);
+        }
+      } catch (error) {
+        if (!isCurrentRequest()) {
+          return;
+        }
+
+        if (error.response?.status === 401) {
+          endSession("Your session has expired. Please sign in again.");
+        } else {
+          setHistoryMessage(
+            getErrorMessage(error, "Saved scans could not be loaded."),
+          );
+        }
+      } finally {
+        if (isCurrentRequest()) {
+          setHistoryLoading(false);
+        }
+      }
+    }
+
+    loadSavedHistory();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [endSession, isCurrentSession, token]);
 
   const updateAuthField = (field, value) => {
     setAuthForm((current) => ({ ...current, [field]: value }));
-  };
-
-  const updateEmailField = (field, value) => {
-    setForm((current) => ({ ...current, [field]: value }));
+    setAuthMessage("");
   };
 
   const saveSession = (nextToken, nextUsername) => {
+    sessionVersionRef.current += 1;
+    historyRequestRef.current += 1;
     localStorage.setItem(TOKEN_STORAGE_KEY, nextToken);
     localStorage.setItem("threatlens_user", nextUsername);
+    setHistory([]);
+    setHistoryLoading(false);
+    setHistoryMessage("");
+    clearReport();
     setToken(nextToken);
     setUsername(nextUsername);
-    setMessage("");
+    setAuthMessage("");
+    window.location.hash = "console";
   };
 
   const handleLogin = async (event) => {
     event.preventDefault();
-    setBusy(true);
-    setMessage("");
+
+    if (authBusy) {
+      return;
+    }
+
+    setAuthBusy(true);
+    setAuthMessage("");
 
     try {
       const data = await loginUser(authForm);
       saveSession(data.access_token, authForm.username.trim().toLowerCase());
       setAuthForm(EMPTY_AUTH);
     } catch (error) {
-      setMessage(getErrorMessage(error, "Login failed"));
+      setAuthMessage(getErrorMessage(error, "Login failed. Please try again."));
     } finally {
-      setBusy(false);
+      setAuthBusy(false);
     }
   };
 
   const handleRegister = async (event) => {
     event.preventDefault();
-    setBusy(true);
-    setMessage("");
+
+    if (authBusy) {
+      return;
+    }
+
+    setAuthBusy(true);
+    setAuthMessage("");
 
     try {
       await registerUser(authForm);
-      const data = await loginUser(authForm);
-      saveSession(data.access_token, authForm.username.trim().toLowerCase());
-      setAuthForm(EMPTY_AUTH);
+
+      try {
+        const data = await loginUser(authForm);
+        saveSession(data.access_token, authForm.username.trim().toLowerCase());
+        setAuthForm(EMPTY_AUTH);
+      } catch {
+        setAuthMode("login");
+        setAuthForm((current) => ({ ...current, password: "" }));
+        setAuthMessage(
+          "Account created, but automatic sign-in did not complete. Please sign in.",
+        );
+      }
     } catch (error) {
-      setMessage(getErrorMessage(error, "Registration failed"));
+      setAuthMessage(
+        getErrorMessage(error, "Registration failed. Please try again."),
+      );
     } finally {
-      setBusy(false);
+      setAuthBusy(false);
     }
   };
 
-  const logout = useCallback(() => {
-    localStorage.removeItem(TOKEN_STORAGE_KEY);
-    localStorage.removeItem("threatlens_user");
-    setToken(null);
-    setUsername("");
-    setReport(null);
-    setHistory([]);
-    setMessage("");
-  }, []);
+  const updateEmailField = (field, value) => {
+    setForm((current) => ({ ...current, [field]: value }));
+    setScanMessage("");
+    clearReport();
+  };
 
-  const loadHistory = useCallback(
-    async (activeToken = token, showErrors = true) => {
-      if (!activeToken) {
-        return;
-      }
-
-      try {
-        setHistory(await getHistory(activeToken));
-      } catch (error) {
-        if (error.response?.status === 401) {
-          logout();
-          return;
-        }
-
-        if (showErrors) {
-          setMessage(getErrorMessage(error, "History failed to load"));
-        }
-      }
-    },
-    [logout, token],
-  );
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadSavedScans() {
-      if (!token) {
-        return;
-      }
-
-      try {
-        const savedScans = await getHistory(token);
-
-        if (!cancelled) {
-          setHistory(savedScans);
-        }
-      } catch (error) {
-        if (!cancelled && error.response?.status === 401) {
-          logout();
-        }
-      }
+  const handleParseEmail = () => {
+    if (!rawEmail.trim()) {
+      setParserResult(null);
+      setScanMessage("Paste a full email before parsing.");
+      return;
     }
 
-    loadSavedScans();
+    const parsedEmail = parseEmailText(rawEmail);
 
-    return () => {
-      cancelled = true;
-    };
-  }, [logout, token]);
+    setForm(parsedEmail);
+    setParserResult(parsedEmail);
+    setInputMode("fields");
+    setScanMessage("");
+    clearReport();
+  };
+
+  const loadSample = (sampleName) => {
+    setForm({ ...SAMPLES[sampleName] });
+    setRawEmail("");
+    setParserResult(null);
+    setInputMode("fields");
+    setScanMessage("");
+    clearReport();
+  };
+
+  const clearInput = () => {
+    setForm(EMPTY_EMAIL);
+    setRawEmail("");
+    setParserResult(null);
+    setScanMessage("");
+    clearReport();
+  };
 
   const submitScan = async (event) => {
     event.preventDefault();
-    setBusy(true);
-    setMessage("");
 
-    try {
-      const payload = {
-        sender: form.sender,
-        subject: form.subject,
-        body: form.body,
-        reply_to: form.reply_to || null,
-      };
-
-      setReport(await scanEmail(payload, token));
-      await loadHistory(token, false);
-    } catch (error) {
-      setMessage(getErrorMessage(error, "Scan failed"));
-
-      if (error.response?.status === 401) {
-        logout();
-      }
-    } finally {
-      setBusy(false);
+    if (scanBusy) {
+      return;
     }
-  };
 
-  const loadSample = (sample) => {
-    setForm(SAMPLES[sample]);
-    setReport(null);
-    setMessage("");
-  };
+    const validationMessage = validateEmail(form);
 
-  const removeHistoryItem = async (scanId) => {
-    setHistoryBusy(true);
-    setMessage("");
+    if (validationMessage) {
+      setScanMessage(validationMessage);
+      return;
+    }
+
+    setScanBusy(true);
+    setScanMessage("");
+    setHistoryMessage("");
+    setAnnouncement("Threat analysis in progress.");
+    clearReport();
+
+    const payload = {
+      sender: form.sender.trim(),
+      subject: form.subject.trim(),
+      body: form.body,
+      reply_to: form.reply_to.trim() || null,
+    };
+    const requestVersion = sessionVersionRef.current;
+    const requestToken = token;
 
     try {
-      await deleteHistoryItem(scanId, token);
-      setHistory((items) => items.filter((item) => item.id !== scanId));
+      const scanResult = await scanEmail(payload, requestToken);
+
+      if (!isCurrentSession(requestVersion, requestToken)) {
+        return;
+      }
+
+      setReport(scanResult);
+      setReportEmail({ ...payload });
+      setReportMetadata({ source: "fresh" });
+      setCurrentScanId(null);
+      setAnnouncement(
+        `Analysis complete: ${scanResult.label}, score ${scanResult.risk_score} out of 100.`,
+      );
+
+      const historyRequestId = ++historyRequestRef.current;
+      setHistoryLoading(true);
+      try {
+        const savedScans = await getHistory(requestToken);
+
+        if (
+          isCurrentSession(requestVersion, requestToken) &&
+          historyRequestRef.current === historyRequestId
+        ) {
+          setHistory(savedScans);
+        }
+      } catch (historyError) {
+        if (!isCurrentSession(requestVersion, requestToken)) {
+          return;
+        }
+
+        if (historyError.response?.status === 401) {
+          endSession("Your session has expired. Please sign in again.");
+          return;
+        }
+
+        setHistoryMessage(
+          getErrorMessage(
+            historyError,
+            "The scan completed, but history could not be refreshed.",
+          ),
+        );
+      } finally {
+        if (
+          isCurrentSession(requestVersion, requestToken) &&
+          historyRequestRef.current === historyRequestId
+        ) {
+          setHistoryLoading(false);
+        }
+      }
     } catch (error) {
-      setMessage(getErrorMessage(error, "History item could not be deleted"));
+      if (!isCurrentSession(requestVersion, requestToken)) {
+        return;
+      }
 
       if (error.response?.status === 401) {
-        logout();
+        endSession("Your session has expired. Please sign in again.");
+        return;
       }
+
+      setScanMessage(getErrorMessage(error, "The email scan failed."));
+      setAnnouncement("Threat analysis failed.");
     } finally {
-      setHistoryBusy(false);
+      if (isCurrentSession(requestVersion, requestToken)) {
+        setScanBusy(false);
+      }
     }
   };
 
   const refreshHistory = async () => {
-    setHistoryBusy(true);
-    setMessage("");
+    if (!token || historyLoading || scanBusy || deletingId) {
+      return;
+    }
+
+    const requestVersion = sessionVersionRef.current;
+    const requestToken = token;
+    const requestId = ++historyRequestRef.current;
+    const isCurrentRequest = () =>
+      historyRequestRef.current === requestId &&
+      isCurrentSession(requestVersion, requestToken);
+
+    setHistoryLoading(true);
+    setHistoryMessage("");
 
     try {
-      await loadHistory(token);
+      const savedScans = await getHistory(requestToken);
+
+      if (isCurrentRequest()) {
+        setHistory(savedScans);
+      }
+    } catch (error) {
+      if (!isCurrentRequest()) {
+        return;
+      }
+
+      if (error.response?.status === 401) {
+        endSession("Your session has expired. Please sign in again.");
+        return;
+      }
+
+      setHistoryMessage(
+        getErrorMessage(error, "Saved scans could not be refreshed."),
+      );
     } finally {
-      setHistoryBusy(false);
+      if (isCurrentRequest()) {
+        setHistoryLoading(false);
+      }
     }
   };
+
+  const selectHistoryItem = (item) => {
+    if (deletingId || scanBusy) {
+      return;
+    }
+
+    setReport({
+      risk_score: item.risk_score,
+      label: item.label,
+      ml_score: item.ml_score,
+      nlp_score: item.nlp_score,
+      url_score: item.url_score,
+      metadata_score: item.metadata_score,
+      reasons: item.reasons ?? [],
+    });
+    setReportMetadata({
+      id: item.id,
+      created_at: item.created_at,
+      source: "history",
+    });
+    setReportEmail({
+      sender: item.sender,
+      reply_to: item.reply_to,
+      subject: item.subject,
+      body: item.body_preview,
+    });
+    setCurrentScanId(item.id);
+    setAnnouncement(
+      `Saved report loaded: ${item.label}, score ${item.risk_score} out of 100.`,
+    );
+  };
+
+  const removeHistoryItem = async (item) => {
+    const confirmed = window.confirm(
+      `Delete the saved scan for “${item.subject || "No subject"}”? This cannot be undone.`,
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    const requestVersion = sessionVersionRef.current;
+    const requestToken = token;
+    historyRequestRef.current += 1;
+    setDeletingId(item.id);
+    setHistoryLoading(false);
+    setHistoryMessage("");
+
+    try {
+      await deleteHistoryItem(item.id, requestToken);
+
+      if (!isCurrentSession(requestVersion, requestToken)) {
+        return;
+      }
+
+      setHistory((current) => current.filter((entry) => entry.id !== item.id));
+      setAnnouncement("Saved scan deleted.");
+
+      if (selectedScanIdRef.current === item.id) {
+        clearReport();
+      }
+    } catch (error) {
+      if (!isCurrentSession(requestVersion, requestToken)) {
+        return;
+      }
+
+      if (error.response?.status === 401) {
+        endSession("Your session has expired. Please sign in again.");
+        return;
+      }
+
+      setHistoryMessage(
+        getErrorMessage(error, "The saved scan could not be deleted."),
+      );
+    } finally {
+      if (isCurrentSession(requestVersion, requestToken)) {
+        setDeletingId(null);
+      }
+    }
+  };
+
+  if (view === "about") {
+    return <AboutPage isAuthenticated={isAuthenticated} />;
+  }
 
   if (!isAuthenticated) {
     const isLogin = authMode === "login";
 
     return (
-      <main className="auth-shell">
-        <section className="auth-panel">
-          <div className="brand-block">
-            <p className="eyebrow">ThreatLens</p>
-            <h1>{isLogin ? "Login" : "Register"}</h1>
-          </div>
-
-          <form className="auth-form" onSubmit={isLogin ? handleLogin : handleRegister}>
-            <label>
-              Username
-              <input
-                autoComplete="username"
-                minLength={3}
-                onChange={(event) => updateAuthField("username", event.target.value)}
-                required
-                type="text"
-                value={authForm.username}
-              />
-            </label>
-
-            <label>
-              Password
-              <input
-                autoComplete={isLogin ? "current-password" : "new-password"}
-                minLength={8}
-                onChange={(event) => updateAuthField("password", event.target.value)}
-                required
-                type="password"
-                value={authForm.password}
-              />
-            </label>
-
-            {message && <p className="form-message">{message}</p>}
-
-            <button className="primary-button" disabled={busy} type="submit">
-              {busy ? "Working..." : isLogin ? "Login" : "Create account"}
-            </button>
-          </form>
-
-          <button
-            className="link-button"
-            onClick={() => {
-              setAuthMode(isLogin ? "register" : "login");
-              setMessage("");
-            }}
-            type="button"
-          >
-            {isLogin ? "Create an account" : "Use existing account"}
-          </button>
-        </section>
-      </main>
+      <AuthScreen
+        busy={authBusy}
+        form={authForm}
+        message={authMessage}
+        mode={authMode}
+        onChange={updateAuthField}
+        onSubmit={isLogin ? handleLogin : handleRegister}
+        onToggleMode={() => {
+          setAuthMode(isLogin ? "register" : "login");
+          setAuthMessage("");
+        }}
+      />
     );
   }
 
   return (
-    <main className="dashboard-shell">
-      <header className="topbar">
-        <div>
-          <p className="eyebrow">ThreatLens</p>
-          <h1>Email scan dashboard</h1>
+    <div className="dashboard-shell">
+      <p className="sr-only" aria-live="polite" role="status">
+        {announcement}
+      </p>
+      <ConsoleHeader
+        counts={counts}
+        onLogout={() => endSession()}
+        username={username}
+      />
+
+      <main className="console-main">
+        <h1 className="sr-only">ThreatLens email threat analysis console</h1>
+        <div className="dashboard-grid">
+          <EmailInputPanel
+            busy={scanBusy}
+            form={form}
+            message={scanMessage}
+            mode={inputMode}
+            onClear={clearInput}
+            onFieldChange={updateEmailField}
+            onLoadSample={loadSample}
+            onModeChange={(nextMode) => {
+              setInputMode(nextMode);
+              setScanMessage("");
+            }}
+            onParse={handleParseEmail}
+            onRawEmailChange={(value) => {
+              setRawEmail(value);
+              setParserResult(null);
+              setScanMessage("");
+              clearReport();
+            }}
+            onSubmit={submitScan}
+            parserStatus={parserStatus}
+            parserWarning={parserWarning}
+            rawEmail={rawEmail}
+          />
+
+          <ThreatReport
+            email={reportEmail}
+            metadata={reportMetadata}
+            report={report}
+          />
+
+          <HistoryPanel
+            deletingId={deletingId}
+            history={history}
+            loading={historyLoading}
+            message={historyMessage}
+            onDelete={removeHistoryItem}
+            onRefresh={refreshHistory}
+            onSelect={selectHistoryItem}
+            selectedId={selectedScanId}
+            interactionDisabled={Boolean(deletingId) || scanBusy}
+          />
         </div>
-        <div className="session-actions">
-          <span>{username}</span>
-          <button className="secondary-button" onClick={logout} type="button">
-            Logout
-          </button>
-        </div>
-      </header>
-
-      <section className="dashboard-grid">
-        <div className="scan-panel">
-          <div className="sample-actions">
-            <button className="secondary-button" onClick={() => loadSample("clean")} type="button">
-              Load clean sample
-            </button>
-            <button className="secondary-button" onClick={() => loadSample("malicious")} type="button">
-              Load phishing sample
-            </button>
-          </div>
-
-          <form className="scan-form" onSubmit={submitScan}>
-            <label>
-              From
-              <input
-                onChange={(event) => updateEmailField("sender", event.target.value)}
-                required
-                type="email"
-                value={form.sender}
-              />
-            </label>
-
-            <label>
-              Reply-To
-              <input
-                onChange={(event) => updateEmailField("reply_to", event.target.value)}
-                type="email"
-                value={form.reply_to}
-              />
-            </label>
-
-            <label>
-              Subject
-              <input
-                onChange={(event) => updateEmailField("subject", event.target.value)}
-                required
-                type="text"
-                value={form.subject}
-              />
-            </label>
-
-            <label>
-              Email body
-              <textarea
-                onChange={(event) => updateEmailField("body", event.target.value)}
-                required
-                rows={10}
-                value={form.body}
-              />
-            </label>
-
-            {message && <p className="form-message">{message}</p>}
-
-            <button className="primary-button" disabled={busy} type="submit">
-              {busy ? "Scanning..." : "Scan email"}
-            </button>
-          </form>
-        </div>
-
-        <aside className="result-panel">
-          {report ? (
-            <>
-              <div className={`risk-summary ${getRiskClass(report.label)}`}>
-                <p className="eyebrow">Risk</p>
-                <strong>{report.risk_score}/100</strong>
-                <span>{report.label}</span>
-              </div>
-
-              <div className="score-grid">
-                <div>
-                  <span>ML</span>
-                  <strong>{report.ml_score}</strong>
-                </div>
-                <div>
-                  <span>NLP</span>
-                  <strong>{report.nlp_score}</strong>
-                </div>
-                <div>
-                  <span>URL</span>
-                  <strong>{report.url_score}</strong>
-                </div>
-                <div>
-                  <span>Metadata</span>
-                  <strong>{report.metadata_score}</strong>
-                </div>
-              </div>
-
-              <div className="explanation-block">
-                <h2>Detection Explanation</h2>
-
-                {report.explanation ? (
-                  <>
-                    <ExplanationGroup
-                      title="ML indicators"
-                      items={report.explanation.ml}
-                      terms={report.ml_suspicious_words ?? []}
-                    />
-                    <ExplanationGroup
-                      title="NLP rule triggers"
-                      items={report.explanation.nlp}
-                    />
-                    <ExplanationGroup
-                      title="URL indicators"
-                      items={report.explanation.url}
-                    />
-                    <ExplanationGroup
-                      title="Metadata indicators"
-                      items={report.explanation.metadata}
-                    />
-                  </>
-                ) : (
-                  <ExplanationGroup title="Reasons" items={report.reasons ?? []} />
-                )}
-              </div>
-            </>
-          ) : (
-            <div className="empty-state">
-              <p className="eyebrow">Result</p>
-              <h2>No scan yet</h2>
-            </div>
-          )}
-        </aside>
-      </section>
-
-      <section className="history-panel">
-        <div className="history-heading">
-          <div>
-            <p className="eyebrow">Saved scans</p>
-            <h2>Scan history</h2>
-          </div>
-          <button
-            className="secondary-button"
-            disabled={historyBusy}
-            onClick={refreshHistory}
-            type="button"
-          >
-            {historyBusy ? "Loading..." : "Refresh"}
-          </button>
-        </div>
-
-        {history.length > 0 ? (
-          <ul className="history-list">
-            {history.map((item) => (
-              <li key={item.id}>
-                <div className="history-main">
-                  <strong>{item.subject}</strong>
-                  <span>{item.sender}</span>
-                  <small>{formatDate(item.created_at)}</small>
-                </div>
-                <div className="history-meta">
-                  <span className={`history-risk ${getRiskClass(item.label)}`}>
-                    {item.risk_score}/100 - {item.label}
-                  </span>
-                  <button
-                    className="secondary-button"
-                    disabled={historyBusy}
-                    onClick={() => removeHistoryItem(item.id)}
-                    type="button"
-                  >
-                    Delete
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="history-empty">No saved scans yet.</p>
-        )}
-      </section>
-    </main>
+      </main>
+    </div>
   );
 }

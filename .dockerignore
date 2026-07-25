@@ -1,0 +1,11 @@
+*
+!backend/
+!backend/**
+!ml/
+!ml/models/
+!ml/models/threatlens_baseline_model.joblib
+!pytest.ini
+
+backend/**/__pycache__/
+backend/**/.pytest_cache/
+backend/**/*.py[cod]

@@ -1,0 +1,38 @@
+name: threatlens
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      THREATLENS_DATABASE_URL: sqlite:////app/data/threatlens.db
+      THREATLENS_JWT_SECRET: ${THREATLENS_JWT_SECRET:-development-only-change-before-deployment}
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - threatlens-data:/app/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/", timeout=5).read()
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+    ports:
+      - "127.0.0.1:4173:4173"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  threatlens-data:
